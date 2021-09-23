@@ -1,11 +1,61 @@
 #include "main.h"
 
 using namespace okapi;
+//done
 
 Motor rightFront(rightFrontPort, false, AbstractMotor::gearset::blue, AbstractMotor::encoderUnits::degrees);
 Motor rightBack(rightBackPort, false, AbstractMotor::gearset::blue, AbstractMotor::encoderUnits::degrees);
 Motor leftFront(leftFrontPort, true, AbstractMotor::gearset::blue, AbstractMotor::encoderUnits::degrees);
 Motor leftBack(leftBackPort, true, AbstractMotor::gearset::blue, AbstractMotor::encoderUnits::degrees);
+
+IMU inertial_sensor(4, IMUAxes::z);
+
+
+double Sl = 5.125; //distance from tracking center to middle of left wheel        ///get correct value
+double  Sr = 5.125; //distance from tracking center to middle of right wheel       //get correct value
+double Ss = 7.75; //distance from tracking center to middle of the tracking wheel  //get correct value
+double wheelDiameter = 4.125;   //get correct value
+double trackingDiameter = 3;
+
+double x; //x coordinate returned
+double y; //y coordinate  returned
+double angle = 0; //angle  returned
+
+double prevLeftEncoderVals;
+double prevRightEncoderVals;
+double prevSidePos;
+
+double changeTheta;
+double newTheta;
+double thetaM;
+
+
+double leftEncoderVals = 0;
+double rightEncoderVals = 0;
+double currentSide = 0;   ///encoder
+
+double leftAtReset = 0;
+double rightAtReset = 0;
+double thetaReset = 0;
+
+double deltaLeft = 0;
+double deltaRight = 0;
+double deltaSide = 0;
+
+double deltaLr = 0;
+double deltaRr = 0;
+
+double deltaX;
+double deltaY;
+
+double theta;
+double radius;
+
+//
+// double leftEncoderVals = drive -> getModel() -> getSensorVals()[0];  //left side of drive encoder values  (averaging values)
+// double rightEncoderVals = drive -> getModel() -> getSensorVals()[1];  //right side of drive encoder values
+
+
 
 std::shared_ptr<ChassisController> drive =
   ChassisControllerBuilder()
@@ -13,83 +63,103 @@ std::shared_ptr<ChassisController> drive =
   .withDimensions(AbstractMotor::gearset::blue, {{4_in, 10_in}, imev5BlueTPR})		  //Blue gearset(100 rpm) and wheel dimensions
   .build();
 
-typedef struct PID pid;
 
-pid left;
-pid right;
+//added:
+  //odom no encoder and tracking wheels:
+  std::shared_ptr<ChassisController> chassis =
+    ChassisControllerBuilder()
+    .withMotors({leftFront, leftBack}, {rightFront, rightBack})   //MotorGroups for left and right side
+    .withDimensions(AbstractMotor::gearset::blue, {{4_in, 10_in}, imev5BlueTPR})		  //Blue gearset(100 rpm) and wheel dimensions
+    .withOdometry()
+    .buildOdometry();
 
 
 void updateDrive()
 {
-  drive -> getModel() -> tank(controller.getAnalog(ControllerAnalog::leftY), controller.getAnalog(ControllerAnalog::rightY));
+  drive -> getModel() -> arcade(controller.getAnalog(ControllerAnalog::leftY),controller.getAnalog(ControllerAnalog::rightX));
 }
 
 
-void translatePID(double leftDistance, double rightDistance)
-{
-	//inertial_values = 0;
-	drive -> getModel() -> setEncoderUnits(AbstractMotor::encoderUnits::degrees);
+float modulo(float a, float b) {
+  while (a>b) {
+    a-=b;
+  }
+  return a;
+}
 
-	left.target = leftDistance * (360 / (2 * 3.1415 * (4 / 2)));				// calculates left side motors target distance in wheel degrees
-	right.target = rightDistance * (360 / (2 * 3.1415 * (4 / 2)));			// calculates right side motors target distance in wheel degrees
+void odometry(){
 
-	//PID constants
-	left.kP = 0.001575;
-	left.kI = 0.0005;
-	left.kD = 0.00015;
+  //store current encoder values in local variables:
+  leftEncoderVals = (leftBack.getPosition() + leftFront.getPosition())/2; //averaging the values, can update later
+  leftEncoderVals = (rightBack.getPosition() + rightFront.getPosition())/2; //averaging the vlaues, can update later
 
-	right.kP = 0.001575;
-	right.kI = 0.0005;
-	right.kD = 0.00015;
+  //currentSide = sideEnc.get_value; //need to get value from side encoder
 
-	//initializes left and right side drivetrain PID controllers
-	auto leftController = IterativeControllerFactory::posPID(left.kP, left.kI, left.kD);
+  deltaLeft = (leftEncoderVals - prevLeftEncoderVals)*2*(M_PI/360)*(wheelDiameter/2); //in inches
+  deltaRight = (rightEncoderVals - prevRightEncoderVals)*2*(M_PI/360)*(wheelDiameter/2); //in inches
+  deltaSide = (currentSide - prevSidePos)*2*(M_PI/360)*(trackingDiameter/2); //in inches
 
-	auto rightController = IterativeControllerFactory::posPID(right.kP, right.kI, right.kD);
+  prevLeftEncoderVals = leftEncoderVals;
+  prevRightEncoderVals = rightEncoderVals;
+  prevSidePos = currentSide;
 
-	drive -> getModel() -> resetSensors();						//reset drivetrain motor sensor values before use
-	//nertial_sensor.reset();													//reset inertial sensor values before use
+  //Calculate the total change in the left and right encoder values since the last reset, and convert to distance of wheel travel;
 
-	while (true)
-	{
+  deltaLr = (leftEncoderVals - leftAtReset)*2*(M_PI/360)*(wheelDiameter/2);
+  deltaRr = (rightEncoderVals - rightAtReset)*2*(M_PI/360)*(wheelDiameter/2); //in inches
 
-		//pros::lcd::set_text(2, std::to_string(drive -> getModel() -> getSensorVals()[0]));
-		left.error = left.target - (drive -> getModel() -> getSensorVals()[0]);
-		left.power = leftController.step(left.error); 							//returns speed for left side
-		//pros::lcd::set_text(1, std::to_string(left_drive_PID.error));
+  newTheta = (thetaReset + (deltaLr -deltaRr) / (Sl+Sr));  //step 5
 
-		right.error = right.target - drive -> getModel() -> getSensorVals()[1];
-		right.power = rightController.step(right.error); 					//returns speed for right side
-		//pros::lcd::set_text(2, std::to_string(right_drive_PID.error));
-		//pros::lcd::set_text(3, std::to_string(leftFront.getPosition()));
-		//pros::lcd::set_text(4, std::to_string(rightFront.getPosition()));
-/*
-		inertial_values = inertial_sensor.get();
-		pros::lcd::set_text(4, std::to_string(inertial_values));
-		if (inertial_values < 0)
-		{
-			right_drive_PID.speed += abs(inertial_values) * 0.01;
-			left_drive_PID.speed -= abs(inertial_values) * 0.01;
-		}
-		else if (inertial_values > 0)
-		{
-			left_drive_PID.speed += abs(inertial_values) * 0.01;
-			right_drive_PID.speed -= abs(inertial_values) * 0.01;
-		}
-    **/
-		pros::lcd::set_text(2, std::to_string(left.power));
-		pros::lcd::set_text(3, std::to_string(right.power));
 
-		drive -> getModel() -> tank(-left.power, -right.power);
+  changeTheta = newTheta - angle;
 
-		if ((abs(left.error) < 5) && (abs(right.error) < 5))
-		{
-			break;
-		}
+  deltaSide = deltaSide - Ss*changeTheta;
 
-		pros::delay(20);
-	}
+  if(changeTheta ==0){
+    deltaX = deltaSide; //step 7
+    deltaY = deltaRight;
+  }
+  else {
+    deltaX = (2*sin(changeTheta/2))*(deltaSide/changeTheta + Ss); //step 8
+    deltaY = (2*sin(changeTheta/2))*(deltaRight/changeTheta +Sr);
+  }
 
-	drive -> getModel() -> tank(0, 0); 								//brakes drivetrain right after PID movement
 
+  thetaM = angle + changeTheta/2;
+
+
+  theta = atan2f(deltaY, deltaX);
+  radius = sqrt(deltaX*deltaX + deltaY*deltaY);
+  theta = theta - thetaM;         //step 10
+  deltaX = radius*cos(theta);
+  deltaY = radius*sin(theta);
+
+
+  newTheta +=M_PI;
+   while (newTheta <= 0) {
+     newTheta+=2*M_PI;
+   }
+   newTheta = modulo(newTheta, 2*M_PI);
+   newTheta-= M_PI;
+
+   angle = newTheta;
+   x = x - deltaX; //step 11
+   y = y + deltaY;
+
+}
+
+double getX(){
+  return x;
+}
+
+double getY(){
+  return y;
+}
+
+double getAngleDegrees(){
+  return angle*180/M_PI;
+}
+
+double getAngle() {
+  return angle;
 }
